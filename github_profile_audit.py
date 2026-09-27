@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -17,12 +18,20 @@ from urllib.request import Request, urlopen
 API = "https://api.github.com"
 Opener = Callable[[Request], Any]
 PR_LINK = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
+REPO_LINK = re.compile(r"https://github\.com/([^/\s?#]+)/([A-Za-z0-9_.-]+)")
 
 
 def fetch_json(path: str, opener: Opener = urlopen) -> Any:
+    token = os.environ.get("GITHUB_TOKEN")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "soukyu-profile-audit",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     request = Request(
         API + path,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "soukyu-profile-audit"},
+        headers=headers,
     )
     try:
         with opener(request, timeout=15) as response:
@@ -62,6 +71,42 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
     return claims
 
 
+def readme_repo_claims(
+    readme: dict[str, Any] | None,
+    repos_by_key: dict[tuple[str, str], dict[str, Any]],
+    opener: Opener,
+) -> list[dict[str, Any]]:
+    """Resolve repository links in the README without trusting link text."""
+    if not readme or not readme.get("content"):
+        return []
+    markdown = base64.b64decode(readme["content"]).decode("utf-8")
+    claims = []
+    seen: set[str] = set()
+    for match in REPO_LINK.finditer(markdown):
+        owner, raw_repo = match.groups()
+        if markdown[match.end() : match.end() + 1] in "/?#":
+            continue
+        repo = raw_repo.rstrip(".,;:")
+        url = f"https://github.com/{owner}/{repo}"
+        if url in seen:
+            continue
+        seen.add(url)
+        key = (owner, repo.rstrip(".,;:"))
+        record = repos_by_key.get(key)
+        if record is None:
+            record = fetch_json(f"/repos/{owner}/{repo}", opener)
+        claims.append(
+            {
+                "url": url,
+                "owner": record.get("owner", {}).get("login"),
+                "private": record.get("private"),
+                "archived": record.get("archived"),
+                "fork": record.get("fork"),
+            }
+        )
+    return claims
+
+
 def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
     profile = fetch_json(f"/users/{username}", opener)
     repos = fetch_json(f"/users/{username}/repos?per_page=100&type=owner&sort=updated", opener)
@@ -75,6 +120,8 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
     pr_claims = readme_pr_claims(readme, opener)
 
     public_repos = [repo for repo in repos if not repo.get("private")]
+    repos_by_key = {(username, repo.get("name")): repo for repo in repos}
+    repo_claims = readme_repo_claims(readme, repos_by_key, opener)
     report = {
         "schema": "github-profile-audit/v1",
         "audited_at": datetime.now(timezone.utc).isoformat(),
@@ -93,6 +140,7 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "size": readme.get("size") if readme else None,
         },
         "pull_request_claims": pr_claims,
+        "repository_claims": repo_claims,
         "repositories": [
             {
                 "name": repo.get("name"),
@@ -111,6 +159,9 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "archived_repos_listed_explicitly": True,
             "profile_pr_claims_are_open": all(
                 claim["state"] == "open" and not claim["merged"] for claim in pr_claims
+            ),
+            "profile_repo_claims_are_public": all(
+                claim["private"] is not True for claim in repo_claims
             ),
         },
     }

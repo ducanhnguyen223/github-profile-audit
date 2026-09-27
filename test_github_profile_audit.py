@@ -67,6 +67,30 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(report["checks"]["profile_pr_claims_are_open"])
         self.assertTrue(report["pull_request_claims"][0]["merged"])
 
+    def test_profile_repository_claims_are_checked_against_live_state(self):
+        readme = base64.b64encode(
+            b'<a href="https://github.com/demo/opsdesk">OpsDesk</a> '
+            b'[private](https://github.com/demo/secret)'
+        ).decode()
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            if path == "/users/demo":
+                return Response({"type": "User", "name": "Demo", "public_repos": 0})
+            if path == "/users/demo/repos?per_page=100&type=owner&sort=updated":
+                return Response([])
+            if path == "/repos/demo/demo/readme":
+                return Response({"path": "README.md", "content": readme})
+            if path == "/repos/demo/opsdesk":
+                return Response({"owner": {"login": "demo"}, "private": False, "archived": False, "fork": False})
+            if path == "/repos/demo/secret":
+                return Response({"owner": {"login": "demo"}, "private": True, "archived": False, "fork": False})
+            raise AssertionError(path)
+
+        report = audit("demo", opener)
+        self.assertFalse(report["checks"]["profile_repo_claims_are_public"])
+        self.assertEqual(len(report["repository_claims"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
