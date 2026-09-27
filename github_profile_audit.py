@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from urllib.request import Request, urlopen
 
 API = "https://api.github.com"
 Opener = Callable[[Request], Any]
+PR_LINK = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
 
 
 def fetch_json(path: str, opener: Opener = urlopen) -> Any:
@@ -32,6 +34,34 @@ def fetch_json(path: str, opener: Opener = urlopen) -> Any:
         raise RuntimeError(f"GitHub API network error for {path}: {exc.reason}") from exc
 
 
+def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict[str, Any]]:
+    if not readme or not readme.get("content"):
+        return []
+    try:
+        markdown = base64.b64decode(readme["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Profile README content is not valid base64 UTF-8") from exc
+
+    claims = []
+    seen: set[str] = set()
+    for match in PR_LINK.finditer(markdown):
+        owner, repo, number = match.groups()
+        url = match.group(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        pull = fetch_json(f"/repos/{owner}/{repo}/pulls/{number}", opener)
+        claims.append(
+            {
+                "url": url,
+                "state": pull.get("state"),
+                "merged": pull.get("merged_at") is not None,
+                "draft": pull.get("draft"),
+            }
+        )
+    return claims
+
+
 def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
     profile = fetch_json(f"/users/{username}", opener)
     repos = fetch_json(f"/users/{username}/repos?per_page=100&type=owner&sort=updated", opener)
@@ -42,6 +72,7 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
         except RuntimeError as exc:
             if "HTTP 404" not in str(exc):
                 raise
+    pr_claims = readme_pr_claims(readme, opener)
 
     public_repos = [repo for repo in repos if not repo.get("private")]
     report = {
@@ -61,6 +92,7 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "sha": readme.get("sha") if readme else None,
             "size": readme.get("size") if readme else None,
         },
+        "pull_request_claims": pr_claims,
         "repositories": [
             {
                 "name": repo.get("name"),
@@ -77,6 +109,9 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "public_repo_count_matches_profile": len(public_repos) == profile.get("public_repos"),
             "private_repos_excluded": all(repo.get("private") is not True for repo in public_repos),
             "archived_repos_listed_explicitly": True,
+            "profile_pr_claims_are_open": all(
+                claim["state"] == "open" and not claim["merged"] for claim in pr_claims
+            ),
         },
     }
     return report

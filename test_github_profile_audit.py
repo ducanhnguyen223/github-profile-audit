@@ -47,6 +47,26 @@ class AuditTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "rate limit"):
             fetch_json("/users/demo", failing_opener)
 
+    def test_profile_pr_claims_are_checked_against_live_state(self):
+        pr_url = "https://github.com/example/project/pull/7"
+        readme = base64.b64encode(f"Open PR: {pr_url}".encode()).decode()
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            if path == "/users/demo":
+                return Response({"type": "User", "name": "Demo", "bio": "AI", "public_repos": 1})
+            if path == "/users/demo/repos?per_page=100&type=owner&sort=updated":
+                return Response([])
+            if path == "/repos/demo/demo/readme":
+                return Response({"path": "README.md", "sha": "abc", "size": len(readme), "content": readme})
+            if path == "/repos/example/project/pulls/7":
+                return Response({"state": "closed", "merged_at": "2026-09-27T00:00:00Z", "draft": False})
+            raise AssertionError(path)
+
+        report = audit("demo", opener)
+        self.assertFalse(report["checks"]["profile_pr_claims_are_open"])
+        self.assertTrue(report["pull_request_claims"][0]["merged"])
+
 
 if __name__ == "__main__":
     unittest.main()
