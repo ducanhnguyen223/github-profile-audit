@@ -2,7 +2,9 @@
 
 Small, read-only GitHub REST API integration for checking public profile metadata and repository evidence.
 
-It reports the profile record, public owner repositories, profile README presence/SHA, and basic consistency checks. It does not write to GitHub, require a token, or infer skill from stars, language percentages, or contribution counts.
+It reports the profile record, public owner repositories, profile README presence/SHA, linked PR/issue state, and basic consistency checks. It does not write to GitHub, require a token, or infer skill from stars, language percentages, or contribution counts.
+
+Discussion links are listed but marked as not checked because the public REST API does not expose discussion state.
 
 ## Run
 

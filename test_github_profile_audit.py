@@ -117,6 +117,32 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(report["checks"]["profile_repo_claims_are_public"])
         self.assertEqual(len(report["repository_claims"]), 2)
 
+    def test_issue_and_discussion_references_are_not_overclaimed(self):
+        readme = base64.b64encode(
+            b"Issue https://github.com/demo/project/issues/7 and "
+            b"discussion https://github.com/demo/project/discussions/3"
+        ).decode()
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            if path == "/users/demo":
+                return Response({"type": "User", "public_repos": 0})
+            if path == "/users/demo/repos?per_page=100&type=owner&sort=updated":
+                return Response([])
+            if path == "/repos/demo/demo/readme":
+                return Response({"path": "README.md", "content": readme})
+            if path == "/repos/demo/project/issues/7":
+                return Response({"state": "open", "title": "An issue", "updated_at": "2026-09-28T00:00:00Z"})
+            raise AssertionError(path)
+
+        report = audit("demo", opener)
+        self.assertTrue(report["checks"]["profile_issue_claims_are_checked"])
+        self.assertTrue(report["checks"]["profile_discussion_claims_are_explicitly_unverified"])
+        self.assertEqual(
+            {claim["verification"] for claim in report["reference_claims"]},
+            {"checked", "not_checked_rest_discussions"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

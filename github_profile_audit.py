@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 API = "https://api.github.com"
 Opener = Callable[[Request], Any]
 PR_LINK = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
+REFERENCE_LINK = re.compile(r"https://github\.com/([^/\s?#]+)/([^/\s?#]+)/(issues|discussions)/(\d+)")
 REPO_LINK = re.compile(r"https://github\.com/([^/\s?#]+)/([A-Za-z0-9_.-]+)")
 OPEN_PR_MARKER = re.compile(r"(?im)^\*\*Open-source work in review:")
 MERGED_PR_MARKER = re.compile(r"(?im)^\*\*Merged upstream:")
@@ -84,6 +85,42 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
     return claims
 
 
+def readme_reference_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict[str, Any]]:
+    """Check issue links and explicitly mark discussion links the REST API cannot resolve."""
+    if not readme or not readme.get("content"):
+        return []
+    try:
+        markdown = base64.b64decode(readme["content"]).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Profile README content is not valid base64 UTF-8") from exc
+
+    claims = []
+    seen: set[str] = set()
+    for owner, repo, kind, number in REFERENCE_LINK.findall(markdown):
+        url = f"https://github.com/{owner}/{repo}/{kind}/{number}"
+        if url in seen:
+            continue
+        seen.add(url)
+        claim: dict[str, Any] = {"url": url, "kind": kind, "verification": "checked"}
+        if kind == "discussions":
+            claim["verification"] = "not_checked_rest_discussions"
+        else:
+            try:
+                issue = fetch_json(f"/repos/{owner}/{repo}/issues/{number}", opener)
+            except RuntimeError as exc:
+                claim.update({"verification": "error", "error": str(exc)})
+            else:
+                claim.update(
+                    {
+                        "state": issue.get("state"),
+                        "title": issue.get("title"),
+                        "updated_at": issue.get("updated_at"),
+                    }
+                )
+        claims.append(claim)
+    return claims
+
+
 def readme_repo_claims(
     readme: dict[str, Any] | None,
     repos_by_key: dict[tuple[str, str], dict[str, Any]],
@@ -131,6 +168,7 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             if "HTTP 404" not in str(exc):
                 raise
     pr_claims = readme_pr_claims(readme, opener)
+    reference_claims = readme_reference_claims(readme, opener)
     open_pr_claims = [claim for claim in pr_claims if claim["kind"] == "open"]
     merged_pr_claims = [claim for claim in pr_claims if claim["kind"] == "merged"]
 
@@ -155,6 +193,7 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "size": readme.get("size") if readme else None,
         },
         "pull_request_claims": pr_claims,
+        "reference_claims": reference_claims,
         "repository_claims": repo_claims,
         "repositories": [
             {
@@ -180,6 +219,16 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             ),
             "profile_repo_claims_are_public": all(
                 claim["private"] is not True for claim in repo_claims
+            ),
+            "profile_issue_claims_are_checked": all(
+                claim["verification"] == "checked"
+                for claim in reference_claims
+                if claim["kind"] == "issues"
+            ),
+            "profile_discussion_claims_are_explicitly_unverified": all(
+                claim["verification"] == "not_checked_rest_discussions"
+                for claim in reference_claims
+                if claim["kind"] == "discussions"
             ),
         },
     }
