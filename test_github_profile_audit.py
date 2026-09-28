@@ -67,6 +67,32 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(report["checks"]["profile_pr_claims_are_open"])
         self.assertTrue(report["pull_request_claims"][0]["merged"])
 
+    def test_open_and_merged_pr_sections_have_distinct_expectations(self):
+        readme = base64.b64encode(
+            b"**Open-source work in review:** "
+            b"https://github.com/example/project/pull/7\n\n"
+            b"**Merged upstream:** https://github.com/example/project/pull/8"
+        ).decode()
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            if path == "/users/demo":
+                return Response({"type": "User", "name": "Demo", "public_repos": 0})
+            if path == "/users/demo/repos?per_page=100&type=owner&sort=updated":
+                return Response([])
+            if path == "/repos/demo/demo/readme":
+                return Response({"path": "README.md", "content": readme})
+            if path == "/repos/example/project/pulls/7":
+                return Response({"state": "open", "merged_at": None, "draft": False})
+            if path == "/repos/example/project/pulls/8":
+                return Response({"state": "closed", "merged_at": "2026-09-27T00:00:00Z", "draft": False})
+            raise AssertionError(path)
+
+        report = audit("demo", opener)
+        self.assertTrue(report["checks"]["profile_pr_claims_are_open"])
+        self.assertTrue(report["checks"]["profile_merged_pr_claims_are_merged"])
+        self.assertEqual([claim["kind"] for claim in report["pull_request_claims"]], ["open", "merged"])
+
     def test_profile_repository_claims_are_checked_against_live_state(self):
         readme = base64.b64encode(
             b'<a href="https://github.com/demo/opsdesk">OpsDesk</a> '

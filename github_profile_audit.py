@@ -19,6 +19,8 @@ API = "https://api.github.com"
 Opener = Callable[[Request], Any]
 PR_LINK = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
 REPO_LINK = re.compile(r"https://github\.com/([^/\s?#]+)/([A-Za-z0-9_.-]+)")
+OPEN_PR_MARKER = re.compile(r"(?im)^\*\*Open-source work in review:")
+MERGED_PR_MARKER = re.compile(r"(?im)^\*\*Merged upstream:")
 
 
 def fetch_json(path: str, opener: Opener = urlopen) -> Any:
@@ -60,9 +62,20 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
             continue
         seen.add(url)
         pull = fetch_json(f"/repos/{owner}/{repo}/pulls/{number}", opener)
+        latest_marker = None
+        latest_kind = "open"
+        for marker in OPEN_PR_MARKER.finditer(markdown, 0, match.start()):
+            if latest_marker is None or marker.start() > latest_marker:
+                latest_marker = marker.start()
+                latest_kind = "open"
+        for marker in MERGED_PR_MARKER.finditer(markdown, 0, match.start()):
+            if latest_marker is None or marker.start() > latest_marker:
+                latest_marker = marker.start()
+                latest_kind = "merged"
         claims.append(
             {
                 "url": url,
+                "kind": latest_kind,
                 "state": pull.get("state"),
                 "merged": pull.get("merged_at") is not None,
                 "draft": pull.get("draft"),
@@ -118,6 +131,8 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             if "HTTP 404" not in str(exc):
                 raise
     pr_claims = readme_pr_claims(readme, opener)
+    open_pr_claims = [claim for claim in pr_claims if claim["kind"] == "open"]
+    merged_pr_claims = [claim for claim in pr_claims if claim["kind"] == "merged"]
 
     public_repos = [repo for repo in repos if not repo.get("private")]
     repos_by_key = {(username, repo.get("name")): repo for repo in repos}
@@ -158,7 +173,10 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "private_repos_excluded": all(repo.get("private") is not True for repo in public_repos),
             "archived_repos_listed_explicitly": True,
             "profile_pr_claims_are_open": all(
-                claim["state"] == "open" and not claim["merged"] for claim in pr_claims
+                claim["state"] == "open" and not claim["merged"] for claim in open_pr_claims
+            ),
+            "profile_merged_pr_claims_are_merged": all(
+                claim["state"] == "closed" and claim["merged"] for claim in merged_pr_claims
             ),
             "profile_repo_claims_are_public": all(
                 claim["private"] is not True for claim in repo_claims
