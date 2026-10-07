@@ -6,7 +6,13 @@ import unittest
 from urllib.error import HTTPError
 from unittest.mock import patch
 
-from github_profile_audit import audit, contribution_snapshot_claim, fetch_graphql, fetch_json
+from github_profile_audit import (
+    audit,
+    contribution_snapshot_claim,
+    fetch_graphql,
+    fetch_json,
+    readme_pr_claims,
+)
 
 
 class Response:
@@ -59,6 +65,75 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(claim["snapshot_date"], "2026-09-29")
         self.assertEqual(claim["reported"]["pull_requests"], 41)
         self.assertEqual(claim["reported"]["total_contributions"], 342)
+
+    def test_current_graphql_snapshot_format_and_repository_breakdown_are_recognized(self):
+        readme = base64.b64encode(
+            b"**GitHub contribution snapshot (GraphQL, rechecked 2026-10-07 07:33 ICT / "
+            b"2026-10-07 00:33 UTC):** 32 owned public repositories total: 15 non-fork "
+            b"public repositories including this profile, plus 17 forks; 385 contributions "
+            b"in the exact preceding 365 days, including 255 commits, 55 pull-request "
+            b"contributions, 12 reviews and 2 issues."
+        ).decode()
+
+        def opener(request, timeout=15):
+            self.assertEqual(request.full_url, "https://api.github.com/graphql")
+            query = json.loads(request.data)
+            self.assertEqual(
+                query["variables"],
+                {
+                    "login": "demo",
+                    "from": "2025-10-07T00:33:00Z",
+                    "to": "2026-10-07T00:33:00Z",
+                },
+            )
+            return Response(
+                {
+                    "data": {
+                        "user": {
+                            "contributionsCollection": {
+                                "startedAt": "2025-10-07T00:33:00Z",
+                                "endedAt": "2026-10-07T00:33:00Z",
+                                "totalCommitContributions": 255,
+                                "totalPullRequestContributions": 55,
+                                "totalPullRequestReviewContributions": 12,
+                                "totalIssueContributions": 2,
+                                "contributionCalendar": {"totalContributions": 385},
+                            }
+                        }
+                    }
+                }
+            )
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(
+                {"content": readme}, {"public_repos": 32}, "demo", opener
+            )
+
+        self.assertEqual(claim["verification"], "checked")
+        self.assertTrue(claim["matches"])
+        self.assertEqual(claim["reported_public_repos"], 32)
+        self.assertEqual(
+            claim["reported_repo_breakdown"],
+            {"non_fork_public_repos": 15, "forks": 17},
+        )
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
+    def test_current_snapshot_flags_an_arithmetically_inconsistent_repo_breakdown(self):
+        readme = base64.b64encode(
+            b"**GitHub contribution snapshot (GraphQL, rechecked 2026-10-07 07:33 ICT / "
+            b"2026-10-07 00:33 UTC):** 32 owned public repositories total: 15 non-fork "
+            b"public repositories including this profile, plus 16 forks; 385 contributions "
+            b"in the exact preceding 365 days, including 255 commits, 55 pull-request "
+            b"contributions, 12 reviews and 2 issues."
+        ).decode()
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": ""}):
+            claim = contribution_snapshot_claim(
+                {"content": readme}, {"public_repos": 32}, "demo", fake_opener
+            )
+
+        self.assertEqual(claim["verification"], "not_checked_auth_required")
+        self.assertFalse(claim["repo_breakdown_matches_total"])
 
     def test_snapshot_repo_count_is_not_compared_to_current_profile_count(self):
         readme = base64.b64encode(
@@ -276,6 +351,55 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(report["checks"]["profile_pr_claims_are_open"])
         self.assertTrue(report["checks"]["profile_merged_pr_claims_are_merged"])
         self.assertEqual([claim["kind"] for claim in report["pull_request_claims"]], ["open", "merged"])
+
+    def test_pr_lifecycle_claims_are_local_and_unlabeled_links_are_unasserted(self):
+        urls = {
+            number: f"https://github.com/example/project/pull/{number}"
+            for number in range(7, 14)
+        }
+        markdown = (
+            "**Selected open upstream work, checked today** — status is shown.\n\n"
+            f"| [Example #{7}]({urls[7]}) | fix | Open · review required |\n"
+            f"| [Example #{8}]({urls[8]}) | docs | Open · checks passing |\n\n"
+            f"Haystack [#{9}]({urls[9]}) is not listed as open: the maintainer closed it "
+            "without merge.\n\n"
+            f"**Merged upstream:** [Example #{10}]({urls[10]}), merged by the maintainer.\n\n"
+            "**Review feedback incorporated:**\n\n"
+            f"In [Example #{11}]({urls[11]}), I reported the edge case; the maintainer merged it. "
+            f"[Example #{12}]({urls[12]}) remains open while review is pending.\n\n"
+            "**Technical context:**\n\n"
+            f"This evidence link [Example #{13}]({urls[13]}) has no lifecycle claim."
+        )
+        readme = {"content": base64.b64encode(markdown.encode()).decode()}
+        states = {
+            "7": ("open", None),
+            "8": ("open", None),
+            "9": ("closed", None),
+            "10": ("closed", "2026-09-30T00:00:00Z"),
+            "11": ("closed", "2026-09-29T00:00:00Z"),
+            "12": ("open", None),
+            "13": ("open", None),
+        }
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            number = path.rsplit("/", 1)[-1]
+            state, merged_at = states[number]
+            return Response({"state": state, "merged_at": merged_at, "draft": False})
+
+        claims = readme_pr_claims(readme, opener)
+        self.assertEqual(
+            [claim["kind"] for claim in claims],
+            [
+                "open",
+                "open",
+                "closed_unmerged",
+                "merged",
+                "merged",
+                "open",
+                "unasserted",
+            ],
+        )
 
     def test_profile_repository_claims_are_checked_against_live_state(self):
         readme = base64.b64encode(

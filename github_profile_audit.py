@@ -21,14 +21,39 @@ Opener = Callable[[Request], Any]
 PR_LINK = re.compile(r"https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)")
 REFERENCE_LINK = re.compile(r"https://github\.com/([^/\s?#]+)/([^/\s?#]+)/(issues|discussions)/(\d+)")
 REPO_LINK = re.compile(r"https://github\.com/([^/\s?#]+)/([A-Za-z0-9_.-]+)")
-OPEN_PR_MARKER = re.compile(r"(?im)^\*\*Open-source work in review:")
+OPEN_PR_MARKER = re.compile(
+    r"(?im)^(?:\*\*)?(?:Open-source work in review|Open PR|Selected open upstream work)\b"
+)
 MERGED_PR_MARKER = re.compile(r"(?im)^\*\*Merged upstream:")
+PR_CLOSED_UNMERGED = re.compile(
+    r"(?i)\bclosed\b[^.!?\n]{0,100}\bwithout\s+(?:being\s+)?merg(?:e|ed|ing|er)\b"
+)
+PR_OPEN_STATEMENT = re.compile(
+    r"(?i)(?:\bopen\s*[·|—-]|\bremains?\s+open\b|\bstill\s+open\b|\bwas\s+reopened\b|"
+    r"\breopened\s+(?:it|the\s+pr)\b)"
+)
+PR_MERGED_STATEMENT = re.compile(
+    r"(?i)(?:\b(?:maintainer|author|upstream)\s+(?:has\s+)?merged\b|"
+    r"\bmerged\s+(?:the\s+)?(?:pr|pull\s+request|it)\b|\bpr\s+was\s+merged\b)"
+)
+SECTION_HEADER = re.compile(r"(?m)^(?:#{1,6}\s+.+|\*\*[^*\n]+\*\*.*)$")
 CONTRIBUTION_SNAPSHOT = re.compile(
     r"\*\*GitHub snapshot (?P<date>\d{4}-\d{2}-\d{2})(?: (?P<time>\d{2}:\d{2}))? UTC:\*\*\s+"
     r"(?P<public_repos>[\d,]+) public repos including this profile;\s+"
     r"(?P<commits>[\d,]+) commits,\s+(?P<pull_requests>[\d,]+) pull requests,\s+"
     r"(?P<reviews>[\d,]+) reviews?,\s+(?P<issues>[\d,]+) issues? and\s+"
     r"(?P<total_contributions>[\d,]+) total contributions\b"
+)
+CURRENT_CONTRIBUTION_SNAPSHOT = re.compile(
+    r"\*\*GitHub contribution snapshot \(GraphQL, rechecked "
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT / "
+    r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}) UTC\):\*\*\s+"
+    r"(?P<public_repos>[\d,]+) owned public repositories total: "
+    r"(?P<non_fork_public_repos>[\d,]+) non-fork(?: public)? repositories including this profile, plus "
+    r"(?P<forks>[\d,]+) forks;\s+"
+    r"(?P<total_contributions>[\d,]+) contributions in the exact preceding 365 days, including "
+    r"(?P<commits>[\d,]+) commits, (?P<pull_requests>[\d,]+) pull-request contributions, "
+    r"(?P<reviews>[\d,]+) reviews and (?P<issues>[\d,]+) issues\."
 )
 DISCUSSION_QUERY = """
 query DiscussionAudit($owner: String!, $repo: String!, $number: Int!, $after: String) {
@@ -133,17 +158,24 @@ def contribution_snapshot_claim(
         markdown = base64.b64decode(readme["content"]).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
         raise RuntimeError("Profile README content is not valid base64 UTF-8") from exc
-    match = CONTRIBUTION_SNAPSHOT.search(markdown)
+    match = CURRENT_CONTRIBUTION_SNAPSHOT.search(markdown) or CONTRIBUTION_SNAPSHOT.search(markdown)
     if not match:
         return {"verification": "not_present", "matches": None}
 
     parsed_values = {
         key: int(value.replace(",", ""))
         for key, value in match.groupdict().items()
-        if key not in {"date", "time"}
+        if value is not None and key not in {"date", "time"}
     }
     reported_public_repos = parsed_values.pop("public_repos")
+    reported_non_fork_public_repos = parsed_values.pop("non_fork_public_repos", None)
+    reported_forks = parsed_values.pop("forks", None)
     reported = parsed_values
+    repo_breakdown_matches_total = None
+    if reported_non_fork_public_repos is not None and reported_forks is not None:
+        repo_breakdown_matches_total = (
+            reported_non_fork_public_repos + reported_forks == reported_public_repos
+        )
     try:
         snapshot_date = datetime.strptime(match.group("date"), "%Y-%m-%d").date()
     except ValueError:
@@ -151,6 +183,15 @@ def contribution_snapshot_claim(
             "verification": "invalid_snapshot_date",
             "reported": reported,
             "reported_public_repos": reported_public_repos,
+            "reported_repo_breakdown": (
+                {
+                    "non_fork_public_repos": reported_non_fork_public_repos,
+                    "forks": reported_forks,
+                }
+                if reported_non_fork_public_repos is not None and reported_forks is not None
+                else None
+            ),
+            "repo_breakdown_matches_total": repo_breakdown_matches_total,
             "historical_public_repos_verification": "not_available",
             "matches": False,
         }
@@ -162,6 +203,15 @@ def contribution_snapshot_claim(
         "snapshot_time": timestamp,
         "reported": reported,
         "reported_public_repos": reported_public_repos,
+        "reported_repo_breakdown": (
+            {
+                "non_fork_public_repos": reported_non_fork_public_repos,
+                "forks": reported_forks,
+            }
+            if reported_non_fork_public_repos is not None and reported_forks is not None
+            else None
+        ),
+        "repo_breakdown_matches_total": repo_breakdown_matches_total,
         "historical_public_repos_verification": "not_available",
         "historical_public_repos_reason": (
             "GitHub exposes the current public repository count, not its value at a past snapshot time."
@@ -264,20 +314,72 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
             continue
         seen.add(url)
         pull = fetch_json(f"/repos/{owner}/{repo}/pulls/{number}", opener)
-        latest_marker = None
-        latest_kind = "open"
-        for marker in OPEN_PR_MARKER.finditer(markdown, 0, match.start()):
-            if latest_marker is None or marker.start() > latest_marker:
-                latest_marker = marker.start()
-                latest_kind = "open"
-        for marker in MERGED_PR_MARKER.finditer(markdown, 0, match.start()):
-            if latest_marker is None or marker.start() > latest_marker:
-                latest_marker = marker.start()
-                latest_kind = "merged"
+        line_start = markdown.rfind("\n", 0, match.start()) + 1
+        line_end = markdown.find("\n", match.end())
+        if line_end == -1:
+            line_end = len(markdown)
+        line = markdown[line_start:line_end]
+        paragraph_break = markdown.rfind("\n\n", 0, match.start())
+        paragraph_start = paragraph_break + 2 if paragraph_break >= 0 else 0
+        paragraph_end = markdown.find("\n\n", match.end())
+        if paragraph_end == -1:
+            paragraph_end = len(markdown)
+        paragraph = markdown[paragraph_start:paragraph_end]
+
+        # Only an explicit local status or a heading for the same paragraph
+        # creates a lifecycle claim. Unlabeled evidence links stay unasserted.
+        section_headers = list(SECTION_HEADER.finditer(markdown, 0, match.start()))
+        latest_section = section_headers[-1].group(0) if section_headers else ""
+        section_is_open = bool(OPEN_PR_MARKER.match(latest_section))
+        section_is_merged = bool(MERGED_PR_MARKER.match(latest_section))
+
+        paragraph_pr_links = list(PR_LINK.finditer(paragraph))
+        paragraph_pr_numbers = {item.group(3) for item in paragraph_pr_links}
+        relative_link_start = match.start() - paragraph_start
+        relevant_sentences = []
+        sentence_breaks = list(re.finditer(r"(?<=[.!?])\s+", paragraph))
+        sentence_spans = []
+        cursor = 0
+        for boundary in sentence_breaks:
+            sentence_spans.append((cursor, boundary.start()))
+            cursor = boundary.end()
+        sentence_spans.append((cursor, len(paragraph)))
+        for start, end in sentence_spans:
+            sentence = paragraph[start:end]
+            if (
+                sentence
+                and (
+                    start <= relative_link_start < end
+                    or re.search(rf"#{re.escape(number)}\b", sentence)
+                )
+            ):
+                relevant_sentences.append(sentence)
+        if len(paragraph_pr_numbers) == 1:
+            relevant_sentences.append(paragraph)
+        line_context = (
+            line
+            if "|" in line or OPEN_PR_MARKER.match(line) or MERGED_PR_MARKER.match(line)
+            else ""
+        )
+        local_context = "\n".join([line_context, *relevant_sentences])
+
+        kind = "unasserted"
+        if PR_CLOSED_UNMERGED.search(local_context):
+            kind = "closed_unmerged"
+        elif section_is_merged:
+            kind = "merged"
+        elif (
+            section_is_open
+            or OPEN_PR_MARKER.search(line)
+            or PR_OPEN_STATEMENT.search(local_context)
+        ):
+            kind = "open"
+        elif PR_MERGED_STATEMENT.search(local_context):
+            kind = "merged"
         claims.append(
             {
                 "url": url,
-                "kind": latest_kind,
+                "kind": kind,
                 "state": pull.get("state"),
                 "merged": pull.get("merged_at") is not None,
                 "draft": pull.get("draft"),
@@ -451,6 +553,9 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
     reference_claims = readme_reference_claims(readme, opener)
     open_pr_claims = [claim for claim in pr_claims if claim["kind"] == "open"]
     merged_pr_claims = [claim for claim in pr_claims if claim["kind"] == "merged"]
+    closed_unmerged_pr_claims = [
+        claim for claim in pr_claims if claim["kind"] == "closed_unmerged"
+    ]
     contribution_snapshot = contribution_snapshot_claim(readme, profile, username, opener)
 
     public_repos = [repo for repo in repos if not repo.get("private")]
@@ -499,6 +604,10 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
             "profile_merged_pr_claims_are_merged": all(
                 claim["state"] == "closed" and claim["merged"] for claim in merged_pr_claims
             ),
+            "profile_closed_unmerged_pr_claims_are_closed_without_merge": all(
+                claim["state"] == "closed" and not claim["merged"]
+                for claim in closed_unmerged_pr_claims
+            ),
             "profile_repo_claims_are_public": all(
                 claim["private"] is not True for claim in repo_claims
             ),
@@ -513,6 +622,9 @@ def audit(username: str, opener: Opener = urlopen) -> dict[str, Any]:
                 if claim["kind"] == "discussions"
             ),
             "profile_contribution_snapshot_matches_live_data": contribution_snapshot.get("matches"),
+            "profile_contribution_repo_breakdown_is_consistent": contribution_snapshot.get(
+                "repo_breakdown_matches_total"
+            ),
         },
     }
     return report
