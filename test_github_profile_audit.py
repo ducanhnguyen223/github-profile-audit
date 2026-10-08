@@ -355,7 +355,7 @@ class AuditTests(unittest.TestCase):
     def test_pr_lifecycle_claims_are_local_and_unlabeled_links_are_unasserted(self):
         urls = {
             number: f"https://github.com/example/project/pull/{number}"
-            for number in range(7, 14)
+            for number in range(7, 15)
         }
         markdown = (
             "**Selected open upstream work, checked today** — status is shown.\n\n"
@@ -363,6 +363,8 @@ class AuditTests(unittest.TestCase):
             f"| [Example #{8}]({urls[8]}) | docs | Open · checks passing |\n\n"
             f"Haystack [#{9}]({urls[9]}) is not listed as open: the maintainer closed it "
             "without merge.\n\n"
+            f"Related [Example #{14}]({urls[14]}) was closed by the assignment gate, "
+            "so I have not reopened it.\n\n"
             f"**Merged upstream:** [Example #{10}]({urls[10]}), merged by the maintainer.\n\n"
             "**Review feedback incorporated:**\n\n"
             f"In [Example #{11}]({urls[11]}), I reported the edge case; the maintainer merged it. "
@@ -379,6 +381,7 @@ class AuditTests(unittest.TestCase):
             "11": ("closed", "2026-09-29T00:00:00Z"),
             "12": ("open", None),
             "13": ("open", None),
+            "14": ("closed", None),
         }
 
         def opener(request, timeout=15):
@@ -393,6 +396,7 @@ class AuditTests(unittest.TestCase):
             [
                 "open",
                 "open",
+                "closed_unmerged",
                 "closed_unmerged",
                 "merged",
                 "merged",
