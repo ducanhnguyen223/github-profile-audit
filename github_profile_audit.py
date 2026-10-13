@@ -46,15 +46,24 @@ CONTRIBUTION_SNAPSHOT = re.compile(
     r"(?P<total_contributions>[\d,]+) total contributions\b"
 )
 CURRENT_CONTRIBUTION_SNAPSHOT = re.compile(
-    r"\*\*GitHub contribution snapshot \(GraphQL, rechecked "
+    r"\*\*GitHub (?:contribution|activity) snapshot \(GraphQL, rechecked "
     r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT / "
-    r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}) UTC\):\*\*\s+"
-    r"(?P<public_repos>[\d,]+) owned public repositories total: "
+    r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}(?::\d{2})?) UTC\):\*\*\s+"
+    r"(?:(?P<public_repos>[\d,]+) owned public repositories total: "
     r"(?P<non_fork_public_repos>[\d,]+) non-fork(?: public)? repositories including this profile, plus "
-    r"(?P<forks>[\d,]+) forks;\s+"
-    r"(?P<total_contributions>[\d,]+) contributions in the exact preceding 365 days, including "
+    r"(?P<forks>[\d,]+) forks;\s+)?"
+    r"(?P<total_contributions>[\d,]+) contributions in the exact preceding 365 days"
+    r"(?: \(`?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`?[–-]"
+    r"`?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`?\))?, including "
     r"(?P<commits>[\d,]+) commits, (?P<pull_requests>[\d,]+) pull-request contributions, "
     r"(?P<reviews>[\d,]+) reviews and (?P<issues>[\d,]+) issues\."
+)
+CURRENT_REPOSITORY_INVENTORY = re.compile(
+    r"\*\*Current public-repository inventory, separately rechecked "
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT:\*\*\s+"
+    r"(?P<public_repos>[\d,]+) repositories\s+[—–-]\s+"
+    r"(?P<non_fork_public_repos>[\d,]+) non-fork repositories including this profile, plus "
+    r"(?P<forks>[\d,]+) forks\."
 )
 DISCUSSION_QUERY = """
 query DiscussionAudit($owner: String!, $repo: String!, $number: Int!, $after: String) {
@@ -168,7 +177,11 @@ def contribution_snapshot_claim(
         for key, value in match.groupdict().items()
         if value is not None and key not in {"date", "time"}
     }
-    reported_public_repos = parsed_values.pop("public_repos")
+    inventory_match = CURRENT_REPOSITORY_INVENTORY.search(markdown)
+    if inventory_match:
+        for key, value in inventory_match.groupdict().items():
+            parsed_values.setdefault(key, int(value.replace(",", "")))
+    reported_public_repos = parsed_values.pop("public_repos", None)
     reported_non_fork_public_repos = parsed_values.pop("non_fork_public_repos", None)
     reported_forks = parsed_values.pop("forks", None)
     reported = parsed_values
@@ -229,8 +242,9 @@ def contribution_snapshot_claim(
         )
         return claim
     try:
+        time_format = "%H:%M:%S" if timestamp.count(":") == 2 else "%H:%M"
         snapshot_end = datetime.strptime(
-            f"{match.group('date')} {timestamp}", "%Y-%m-%d %H:%M"
+            f"{match.group('date')} {timestamp}", f"%Y-%m-%d {time_format}"
         ).replace(tzinfo=timezone.utc)
     except ValueError:
         claim.update({"verification": "invalid_snapshot_time", "matches": False})

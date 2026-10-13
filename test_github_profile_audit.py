@@ -118,6 +118,62 @@ class AuditTests(unittest.TestCase):
         )
         self.assertTrue(claim["repo_breakdown_matches_total"])
 
+    def test_activity_snapshot_with_seconds_and_separate_repo_inventory(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 02:49 ICT / "
+            "2026-10-13 19:49:45 UTC):** 416 contributions in the exact preceding 365 days "
+            "(`2025-10-13T19:49:45Z`–`2026-10-13T19:49:45Z`), including 262 commits, "
+            "63 pull-request contributions, 27 reviews and 2 issues. "
+            "**Current public-repository inventory, separately rechecked 2026-10-14 04:14 ICT:** "
+            "34 repositories — 15 non-fork repositories including this profile, plus 19 forks."
+        )
+        readme = base64.b64encode(readme_markdown.encode("utf-8")).decode()
+
+        def opener(request, timeout=15):
+            self.assertEqual(request.full_url, "https://api.github.com/graphql")
+            query = json.loads(request.data)
+            self.assertEqual(
+                query["variables"],
+                {
+                    "login": "demo",
+                    "from": "2025-10-13T19:49:45Z",
+                    "to": "2026-10-13T19:49:45Z",
+                },
+            )
+            return Response(
+                {
+                    "data": {
+                        "user": {
+                            "contributionsCollection": {
+                                "startedAt": "2025-10-13T19:49:45Z",
+                                "endedAt": "2026-10-13T19:49:45Z",
+                                "totalCommitContributions": 262,
+                                "totalPullRequestContributions": 63,
+                                "totalPullRequestReviewContributions": 27,
+                                "totalIssueContributions": 2,
+                                "contributionCalendar": {"totalContributions": 416},
+                            }
+                        }
+                    }
+                }
+            )
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(
+                {"content": readme}, {"public_repos": 34}, "demo", opener
+            )
+
+        self.assertEqual(claim["verification"], "checked")
+        self.assertTrue(claim["matches"])
+        self.assertEqual(claim["period_start"], "2025-10-13T19:49:45Z")
+        self.assertEqual(claim["period_end"], "2026-10-13T19:49:45Z")
+        self.assertEqual(claim["reported_public_repos"], 34)
+        self.assertEqual(
+            claim["reported_repo_breakdown"],
+            {"non_fork_public_repos": 15, "forks": 19},
+        )
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
     def test_current_snapshot_flags_an_arithmetically_inconsistent_repo_breakdown(self):
         readme = base64.b64encode(
             b"**GitHub contribution snapshot (GraphQL, rechecked 2026-10-07 07:33 ICT / "
