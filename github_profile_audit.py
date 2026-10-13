@@ -28,6 +28,7 @@ MERGED_PR_MARKER = re.compile(r"(?im)^\*\*Merged upstream:")
 PR_CLOSED_UNMERGED = re.compile(
     r"(?i)\bclosed\b[^.!?\n]{0,100}\bwithout\s+(?:being\s+)?merg(?:e|ed|ing|er)\b"
 )
+PR_EXPLICITLY_CLOSED = re.compile(r"(?i)\b(?:was|were|has been|is)\s+closed\b")
 PR_OPEN_STATEMENT = re.compile(
     r"(?i)(?:\bopen\s*[·|—-]|\bremains?\s+open\b|\bstill\s+open\b|\bwas\s+reopened\b|"
     r"\breopened\s+(?:it|the\s+pr)\b)"
@@ -366,6 +367,8 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
         kind = "unasserted"
         if PR_CLOSED_UNMERGED.search(local_context):
             kind = "closed_unmerged"
+        elif PR_EXPLICITLY_CLOSED.search(local_context) and pull.get("state") == "closed":
+            kind = "merged" if pull.get("merged_at") is not None else "closed_unmerged"
         elif section_is_merged:
             kind = "merged"
         elif (
