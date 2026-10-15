@@ -198,6 +198,93 @@ class AuditTests(unittest.TestCase):
         )
         self.assertTrue(claim["repo_breakdown_matches_total"])
 
+    def test_complete_utc_calendar_snapshot_uses_inclusive_calendar_window(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-15 19:41:06 ICT / "
+            "2026-10-15 12:41:06 UTC):** 434 contributions across the 365 complete UTC calendar dates "
+            "from `2025-10-15` through `2026-10-14`, including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues. "
+            "**Current public-repository inventory, rechecked 2026-10-15 19:41 ICT:** "
+            "35 repositories — 15 non-fork repositories including this profile, plus 20 forks."
+        )
+        readme = {"content": base64.b64encode(readme_markdown.encode("utf-8")).decode()}
+
+        def opener(request, timeout=15):
+            self.assertEqual(request.full_url, "https://api.github.com/graphql")
+            query = json.loads(request.data)
+            self.assertEqual(
+                query["variables"],
+                {
+                    "login": "demo",
+                    "from": "2025-10-15T00:00:00Z",
+                    "to": "2026-10-14T23:59:59Z",
+                },
+            )
+            return Response(
+                {
+                    "data": {
+                        "user": {
+                            "contributionsCollection": {
+                                "startedAt": "2025-10-15T00:00:00Z",
+                                "endedAt": "2026-10-14T23:59:59Z",
+                                "totalCommitContributions": 264,
+                                "totalPullRequestContributions": 72,
+                                "totalPullRequestReviewContributions": 31,
+                                "totalIssueContributions": 2,
+                                "contributionCalendar": {"totalContributions": 434},
+                            }
+                        }
+                    }
+                }
+            )
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(readme, {"public_repos": 35}, "demo", opener)
+
+        self.assertEqual(claim["verification"], "checked")
+        self.assertTrue(claim["matches"])
+        self.assertEqual(claim["window_type"], "complete_utc_calendar_days")
+        self.assertEqual(claim["period_start"], "2025-10-15T00:00:00Z")
+        self.assertEqual(claim["period_end"], "2026-10-14T23:59:59Z")
+        self.assertEqual(claim["reported_public_repos"], 35)
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
+    def test_calendar_snapshot_rejects_a_range_that_is_not_365_complete_days(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-15 19:41:06 ICT / "
+            "2026-10-15 12:41:06 UTC):** 434 contributions across the 365 complete UTC calendar dates "
+            "from `2025-10-16` through `2026-10-14`, including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues."
+        )
+        readme = {"content": base64.b64encode(readme_markdown.encode("utf-8")).decode()}
+
+        def opener(request, timeout=15):
+            raise AssertionError("invalid calendar range must not query GitHub")
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(readme, {"public_repos": 35}, "demo", opener)
+
+        self.assertEqual(claim["verification"], "invalid_snapshot_window")
+        self.assertFalse(claim["matches"])
+
+    def test_calendar_snapshot_rejects_snapshot_before_window_end(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 12:41:06 ICT / "
+            "2026-10-14 05:41:06 UTC):** 434 contributions across the 365 complete UTC calendar dates "
+            "from `2025-10-15` through `2026-10-14`, including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues."
+        )
+        readme = {"content": base64.b64encode(readme_markdown.encode("utf-8")).decode()}
+
+        def opener(request, timeout=15):
+            raise AssertionError("incomplete calendar window must not query GitHub")
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(readme, {"public_repos": 35}, "demo", opener)
+
+        self.assertEqual(claim["verification"], "invalid_snapshot_window")
+        self.assertFalse(claim["matches"])
+
     def test_current_snapshot_flags_an_arithmetically_inconsistent_repo_breakdown(self):
         readme = base64.b64encode(
             b"**GitHub contribution snapshot (GraphQL, rechecked 2026-10-07 07:33 ICT / "
