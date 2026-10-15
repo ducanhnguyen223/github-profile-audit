@@ -35,6 +35,8 @@ PR_OPEN_STATEMENT = re.compile(
 )
 PR_MERGED_STATEMENT = re.compile(
     r"(?i)(?:\b(?:maintainer|author|upstream)\s+(?:has\s+)?merged\b|"
+    r"\b(?:maintainer|author|upstream)[-–]merged\b|"
+    r"[—–:]\s*merged(?:[.!*]|$)|"
     r"\bmerged\s+(?:the\s+)?(?:pr|pull\s+request|it)\b|\bpr\s+was\s+merged\b)"
 )
 SECTION_HEADER = re.compile(r"(?m)^(?:#{1,6}\s+.+|\*\*[^*\n]+\*\*.*)$")

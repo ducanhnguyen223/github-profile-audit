@@ -485,6 +485,30 @@ class AuditTests(unittest.TestCase):
             ],
         )
 
+    def test_pr_lifecycle_detects_inline_and_grouped_merged_claims(self):
+        urls = {
+            number: f"https://github.com/example/project/pull/{number}"
+            for number in range(15, 20)
+        }
+        markdown = (
+            f"- **[Example #{15}]({urls[15]}) — merged.** Added a focused regression.\n\n"
+            f"Four maintainer-merged PRs in Example: [#{16}]({urls[16]}), "
+            f"[#{17}]({urls[17]}), [#{18}]({urls[18]}) and [#{19}]({urls[19]})."
+        )
+        readme = {"content": base64.b64encode(markdown.encode()).decode()}
+
+        def opener(request, timeout=15):
+            return Response(
+                {
+                    "state": "closed",
+                    "merged_at": "2026-10-14T00:00:00Z",
+                    "draft": False,
+                }
+            )
+
+        claims = readme_pr_claims(readme, opener)
+        self.assertEqual([claim["kind"] for claim in claims], ["merged"] * 5)
+
     def test_profile_repository_claims_are_checked_against_live_state(self):
         readme = base64.b64encode(
             b'<a href="https://github.com/demo/opsdesk">OpsDesk</a> '
