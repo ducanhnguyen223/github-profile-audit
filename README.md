@@ -2,7 +2,7 @@
 
 Small, read-only GitHub API integration (REST with optional GraphQL) for checking public profile metadata and repository evidence.
 
-It reports the profile record, public owner repositories, profile README presence/SHA, linked PR/issue state, and basic consistency checks. With `GITHUB_TOKEN`, it verifies a timestamped contribution snapshot against the exact UTC 365-day window ending at that timestamp. The snapshot's historical public-repository count is retained but cannot be re-verified; the current count is checked separately against the live profile. Date-only snapshots are left unverified because their rolling window is ambiguous. It never writes to GitHub or infers skill from stars, language percentages, or contribution counts.
+It reports the profile record, public owner repositories, profile README presence/SHA, linked PR/issue state, and basic consistency checks. With `GITHUB_TOKEN`, it verifies timestamped contribution snapshots against their explicit UTC window: either the exact preceding 365 days or 365 inclusive UTC calendar dates. The snapshot's historical public-repository count is retained but cannot be re-verified; the current count is checked separately against the live profile. Date-only snapshots without an explicit contribution window are left unverified because their period is ambiguous. It never writes to GitHub or infers skill from stars, language percentages, or contribution counts.
 
 Issue state and commenter GitHub associations are checked with the public REST API. If `GITHUB_TOKEN` is set, discussion metadata is checked with read-only GraphQL. The JSON report includes commenter identities/associations, never comment bodies. Without a token, discussion links are explicitly marked as requiring authenticated verification.
 
