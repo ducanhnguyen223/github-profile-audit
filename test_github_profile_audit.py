@@ -120,7 +120,7 @@ class AuditTests(unittest.TestCase):
 
     def test_activity_snapshot_with_seconds_and_separate_repo_inventory(self):
         readme_markdown = (
-            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 02:49 ICT / "
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 02:49:15 ICT / "
             "2026-10-13 19:49:45 UTC):** 416 contributions in the exact preceding 365 days "
             "(`2025-10-13T19:49:45Z`–`2026-10-13T19:49:45Z`), including 262 commits, "
             "63 pull-request contributions, 27 reviews and 2 issues. "

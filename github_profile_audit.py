@@ -49,7 +49,7 @@ CONTRIBUTION_SNAPSHOT = re.compile(
 )
 CURRENT_CONTRIBUTION_SNAPSHOT = re.compile(
     r"\*\*GitHub (?:contribution|activity) snapshot \(GraphQL, rechecked "
-    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT / "
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})? ICT / "
     r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}(?::\d{2})?) UTC\):\*\*\s+"
     r"(?:(?P<public_repos>[\d,]+) owned public repositories total: "
     r"(?P<non_fork_public_repos>[\d,]+) non-fork(?: public)? repositories including this profile, plus "
