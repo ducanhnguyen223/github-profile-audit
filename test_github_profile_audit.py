@@ -174,6 +174,30 @@ class AuditTests(unittest.TestCase):
         )
         self.assertTrue(claim["repo_breakdown_matches_total"])
 
+    def test_activity_snapshot_with_repo_inventory_without_separately_marker(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 22:41 ICT / "
+            "2026-10-14 15:41:33 UTC):** 434 contributions in the exact preceding 365 days "
+            "(`2025-10-14T15:41:33Z`–`2026-10-14T15:41:33Z`), including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues. "
+            "**Current public-repository inventory, rechecked 2026-10-14 22:41 ICT:** "
+            "35 repositories — 15 non-fork repositories including this profile, plus 20 forks."
+        )
+        readme = base64.b64encode(readme_markdown.encode("utf-8")).decode()
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": ""}):
+            claim = contribution_snapshot_claim(
+                {"content": readme}, {"public_repos": 35}, "demo", fake_opener
+            )
+
+        self.assertEqual(claim["verification"], "not_checked_auth_required")
+        self.assertEqual(claim["reported_public_repos"], 35)
+        self.assertEqual(
+            claim["reported_repo_breakdown"],
+            {"non_fork_public_repos": 15, "forks": 20},
+        )
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
     def test_current_snapshot_flags_an_arithmetically_inconsistent_repo_breakdown(self):
         readme = base64.b64encode(
             b"**GitHub contribution snapshot (GraphQL, rechecked 2026-10-07 07:33 ICT / "

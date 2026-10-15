@@ -59,7 +59,7 @@ CURRENT_CONTRIBUTION_SNAPSHOT = re.compile(
     r"(?P<reviews>[\d,]+) reviews and (?P<issues>[\d,]+) issues\."
 )
 CURRENT_REPOSITORY_INVENTORY = re.compile(
-    r"\*\*Current public-repository inventory, separately rechecked "
+    r"\*\*Current public-repository inventory, (?:separately )?rechecked "
     r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT:\*\*\s+"
     r"(?P<public_repos>[\d,]+) repositories\s+[—–-]\s+"
     r"(?P<non_fork_public_repos>[\d,]+) non-fork repositories including this profile, plus "
