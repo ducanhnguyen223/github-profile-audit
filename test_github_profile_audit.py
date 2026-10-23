@@ -519,6 +519,37 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(report["checks"]["profile_merged_pr_claims_are_merged"])
         self.assertEqual([claim["kind"] for claim in report["pull_request_claims"]], ["open", "merged"])
 
+    def test_explicit_pr_status_overrides_generic_section_heading(self):
+        readme = base64.b64encode(
+            b"**Open-source work in review:**\n"
+            b"| https://github.com/example/project/pull/7 | Open-source docs; maintainer merged it at `abc123` |\n"
+            b"| https://github.com/example/project/pull/8 | - open at `def456`; review required |\n"
+            b"**Merged upstream:**\n"
+            b"| https://github.com/example/project/pull/9 | Open at `ghi789`; review required |"
+        ).decode()
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            if path == "/users/demo":
+                return Response({"type": "User", "name": "Demo", "public_repos": 0})
+            if path == "/users/demo/repos?per_page=100&type=owner&sort=updated":
+                return Response([])
+            if path == "/repos/demo/demo/readme":
+                return Response({"path": "README.md", "content": readme})
+            if path == "/repos/example/project/pulls/7":
+                return Response({"state": "closed", "merged_at": "2026-10-20T00:00:00Z", "draft": False})
+            if path == "/repos/example/project/pulls/8":
+                return Response({"state": "open", "merged_at": None, "draft": False})
+            if path == "/repos/example/project/pulls/9":
+                return Response({"state": "open", "merged_at": None, "draft": False})
+            raise AssertionError(path)
+
+        report = audit("demo", opener)
+        claims = report["pull_request_claims"]
+        self.assertEqual([claim["kind"] for claim in claims], ["merged", "open", "open"])
+        self.assertTrue(report["checks"]["profile_merged_pr_claims_are_merged"])
+        self.assertTrue(report["checks"]["profile_pr_claims_are_open"])
+
     def test_pr_lifecycle_claims_are_local_and_unlabeled_links_are_unasserted(self):
         urls = {
             number: f"https://github.com/example/project/pull/{number}"

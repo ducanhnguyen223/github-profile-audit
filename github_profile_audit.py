@@ -30,11 +30,13 @@ PR_CLOSED_UNMERGED = re.compile(
 )
 PR_EXPLICITLY_CLOSED = re.compile(r"(?i)\b(?:was|were|has been|is)\s+closed\b")
 PR_OPEN_STATEMENT = re.compile(
-    r"(?i)(?:\bopen\s*[·|—-]|\bremains?\s+open\b|\bstill\s+open\b|\bwas\s+reopened\b|"
+    r"(?i)(?:\bopen\s*[·|—]|[·—–-]\s*open\b|"
+    r"\bopen\s+(?:at|with|while|pending|awaiting)\b|"
+    r"\bremains?\s+open\b|\bstill\s+open\b|\bwas\s+reopened\b|"
     r"\breopened\s+(?:it|the\s+pr)\b)"
 )
 PR_MERGED_STATEMENT = re.compile(
-    r"(?i)(?:\b(?:maintainer|author|upstream)\s+(?:has\s+)?merged\b|"
+    r"(?i)(?:\b(?:maintainer|author|upstream)\s+(?:has\s+)?merged\b|\bmerged\s+(?:by|at|in)\b|"
     r"\b(?:maintainer|author|upstream)[-–]merged\b|"
     r"[—–:]\s*merged(?:[.!*]|$)|"
     r"\bmerged\s+(?:the\s+)?(?:pr|pull\s+request|it)\b|\bpr\s+was\s+merged\b)"
@@ -428,23 +430,27 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
             if "|" in line or OPEN_PR_MARKER.match(line) or MERGED_PR_MARKER.match(line)
             else ""
         )
-        local_context = "\n".join([line_context, *relevant_sentences])
+        local_context = (
+            line_context
+            if "|" in line
+            else "\n".join([line_context, *relevant_sentences])
+        )
 
         kind = "unasserted"
         if PR_CLOSED_UNMERGED.search(local_context):
             kind = "closed_unmerged"
         elif PR_EXPLICITLY_CLOSED.search(local_context) and pull.get("state") == "closed":
             kind = "merged" if pull.get("merged_at") is not None else "closed_unmerged"
-        elif section_is_merged:
-            kind = "merged"
         elif (
-            section_is_open
-            or OPEN_PR_MARKER.search(line)
-            or PR_OPEN_STATEMENT.search(local_context)
+            OPEN_PR_MARKER.search(line) or PR_OPEN_STATEMENT.search(local_context)
         ):
             kind = "open"
         elif PR_MERGED_STATEMENT.search(local_context):
             kind = "merged"
+        elif section_is_merged:
+            kind = "merged"
+        elif section_is_open:
+            kind = "open"
         claims.append(
             {
                 "url": url,
