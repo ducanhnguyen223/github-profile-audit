@@ -30,11 +30,15 @@ PR_CLOSED_UNMERGED = re.compile(
 )
 PR_EXPLICITLY_CLOSED = re.compile(r"(?i)\b(?:was|were|has been|is)\s+closed\b")
 PR_OPEN_STATEMENT = re.compile(
-    r"(?i)(?:\bopen\s*[·|—-]|\bremains?\s+open\b|\bstill\s+open\b|\bwas\s+reopened\b|"
+    r"(?i)(?:\bopen\s*[·|—]|[·—–-]\s*open\b|"
+    r"\bopen\s+(?:at|with|while|pending|awaiting)\b|"
+    r"\bremains?\s+open\b|\bstill\s+open\b|\bwas\s+reopened\b|"
     r"\breopened\s+(?:it|the\s+pr)\b)"
 )
 PR_MERGED_STATEMENT = re.compile(
-    r"(?i)(?:\b(?:maintainer|author|upstream)\s+(?:has\s+)?merged\b|"
+    r"(?i)(?:\b(?:maintainer|author|upstream)\s+(?:has\s+)?merged\b|\bmerged\s+(?:by|at|in)\b|"
+    r"\b(?:maintainer|author|upstream)[-–]merged\b|"
+    r"[—–:]\s*merged(?:[.!*]|$)|"
     r"\bmerged\s+(?:the\s+)?(?:pr|pull\s+request|it)\b|\bpr\s+was\s+merged\b)"
 )
 SECTION_HEADER = re.compile(r"(?m)^(?:#{1,6}\s+.+|\*\*[^*\n]+\*\*.*)$")
@@ -46,15 +50,33 @@ CONTRIBUTION_SNAPSHOT = re.compile(
     r"(?P<total_contributions>[\d,]+) total contributions\b"
 )
 CURRENT_CONTRIBUTION_SNAPSHOT = re.compile(
-    r"\*\*GitHub contribution snapshot \(GraphQL, rechecked "
-    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT / "
-    r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}) UTC\):\*\*\s+"
-    r"(?P<public_repos>[\d,]+) owned public repositories total: "
+    r"\*\*GitHub (?:contribution|activity) snapshot \(GraphQL, rechecked "
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})? ICT / "
+    r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}(?::\d{2})?) UTC\):\*\*\s+"
+    r"(?:(?P<public_repos>[\d,]+) owned public repositories total: "
     r"(?P<non_fork_public_repos>[\d,]+) non-fork(?: public)? repositories including this profile, plus "
-    r"(?P<forks>[\d,]+) forks;\s+"
-    r"(?P<total_contributions>[\d,]+) contributions in the exact preceding 365 days, including "
+    r"(?P<forks>[\d,]+) forks;\s+)?"
+    r"(?P<total_contributions>[\d,]+) contributions in the exact preceding 365 days"
+    r"(?: \(`?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`?[–-]"
+    r"`?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`?\))?, including "
     r"(?P<commits>[\d,]+) commits, (?P<pull_requests>[\d,]+) pull-request contributions, "
     r"(?P<reviews>[\d,]+) reviews and (?P<issues>[\d,]+) issues\."
+)
+CALENDAR_CONTRIBUTION_SNAPSHOT = re.compile(
+    r"\*\*GitHub activity snapshot \(GraphQL, rechecked "
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})? ICT / "
+    r"(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}(?::\d{2})?) UTC\):\*\*\s+"
+    r"(?P<total_contributions>[\d,]+) contributions across the 365 complete UTC calendar dates from "
+    r"`(?P<calendar_start>\d{4}-\d{2}-\d{2})` through `(?P<calendar_end>\d{4}-\d{2}-\d{2})`, including "
+    r"(?P<commits>[\d,]+) commits, (?P<pull_requests>[\d,]+) pull-request contributions, "
+    r"(?P<reviews>[\d,]+) reviews and (?P<issues>[\d,]+) issues\."
+)
+CURRENT_REPOSITORY_INVENTORY = re.compile(
+    r"\*\*Current public-repository inventory, (?:separately )?rechecked "
+    r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT:\*\*\s+"
+    r"(?P<public_repos>[\d,]+) repositories\s+[—–-]\s+"
+    r"(?P<non_fork_public_repos>[\d,]+) non-fork repositories including this profile, plus "
+    r"(?P<forks>[\d,]+) forks\."
 )
 DISCUSSION_QUERY = """
 query DiscussionAudit($owner: String!, $repo: String!, $number: Int!, $after: String) {
@@ -159,16 +181,25 @@ def contribution_snapshot_claim(
         markdown = base64.b64decode(readme["content"]).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
         raise RuntimeError("Profile README content is not valid base64 UTF-8") from exc
-    match = CURRENT_CONTRIBUTION_SNAPSHOT.search(markdown) or CONTRIBUTION_SNAPSHOT.search(markdown)
+    calendar_match = CALENDAR_CONTRIBUTION_SNAPSHOT.search(markdown)
+    match = (
+        CURRENT_CONTRIBUTION_SNAPSHOT.search(markdown)
+        or CONTRIBUTION_SNAPSHOT.search(markdown)
+        or calendar_match
+    )
     if not match:
         return {"verification": "not_present", "matches": None}
 
     parsed_values = {
         key: int(value.replace(",", ""))
         for key, value in match.groupdict().items()
-        if value is not None and key not in {"date", "time"}
+        if value is not None and key not in {"date", "time", "calendar_start", "calendar_end"}
     }
-    reported_public_repos = parsed_values.pop("public_repos")
+    inventory_match = CURRENT_REPOSITORY_INVENTORY.search(markdown)
+    if inventory_match:
+        for key, value in inventory_match.groupdict().items():
+            parsed_values.setdefault(key, int(value.replace(",", "")))
+    reported_public_repos = parsed_values.pop("public_repos", None)
     reported_non_fork_public_repos = parsed_values.pop("non_fork_public_repos", None)
     reported_forks = parsed_values.pop("forks", None)
     reported = parsed_values
@@ -202,6 +233,7 @@ def contribution_snapshot_claim(
         "verification": "not_checked_auth_required",
         "snapshot_date": snapshot_date.isoformat(),
         "snapshot_time": timestamp,
+        "window_type": "complete_utc_calendar_days" if calendar_match else "rolling_365_days",
         "reported": reported,
         "reported_public_repos": reported_public_repos,
         "reported_repo_breakdown": (
@@ -229,15 +261,51 @@ def contribution_snapshot_claim(
         )
         return claim
     try:
+        time_format = "%H:%M:%S" if timestamp.count(":") == 2 else "%H:%M"
         snapshot_end = datetime.strptime(
-            f"{match.group('date')} {timestamp}", "%Y-%m-%d %H:%M"
+            f"{match.group('date')} {timestamp}", f"%Y-%m-%d {time_format}"
         ).replace(tzinfo=timezone.utc)
     except ValueError:
         claim.update({"verification": "invalid_snapshot_time", "matches": False})
         return claim
-    snapshot_start = snapshot_end - timedelta(days=365)
-    from_time = snapshot_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    to_time = snapshot_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if calendar_match:
+        try:
+            calendar_start = datetime.strptime(
+                match.group("calendar_start"), "%Y-%m-%d"
+            ).date()
+            calendar_end = datetime.strptime(match.group("calendar_end"), "%Y-%m-%d").date()
+        except ValueError:
+            claim.update({"verification": "invalid_snapshot_window", "matches": False})
+            return claim
+        if (calendar_end - calendar_start).days != 364:
+            claim.update(
+                {
+                    "verification": "invalid_snapshot_window",
+                    "reason": "A complete 365-day UTC calendar window must span 365 inclusive dates.",
+                    "matches": False,
+                }
+            )
+            return claim
+        window_start = datetime.strptime(
+            f"{calendar_start.isoformat()} 00:00:00", "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        window_end = datetime.strptime(
+            f"{calendar_end.isoformat()} 23:59:59", "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone.utc)
+        if snapshot_end < window_end:
+            claim.update(
+                {
+                    "verification": "invalid_snapshot_window",
+                    "reason": "The snapshot time precedes the end of its claimed complete calendar window.",
+                    "matches": False,
+                }
+            )
+            return claim
+    else:
+        window_start = snapshot_end - timedelta(days=365)
+        window_end = snapshot_end
+    from_time = window_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    to_time = window_end.strftime("%Y-%m-%dT%H:%M:%SZ")
     claim.update({"period_start": from_time, "period_end": to_time})
     if not os.environ.get("GITHUB_TOKEN"):
         claim["reason"] = "Set GITHUB_TOKEN to check the dated contribution snapshot via GraphQL."
@@ -362,23 +430,27 @@ def readme_pr_claims(readme: dict[str, Any] | None, opener: Opener) -> list[dict
             if "|" in line or OPEN_PR_MARKER.match(line) or MERGED_PR_MARKER.match(line)
             else ""
         )
-        local_context = "\n".join([line_context, *relevant_sentences])
+        local_context = (
+            line_context
+            if "|" in line
+            else "\n".join([line_context, *relevant_sentences])
+        )
 
         kind = "unasserted"
         if PR_CLOSED_UNMERGED.search(local_context):
             kind = "closed_unmerged"
         elif PR_EXPLICITLY_CLOSED.search(local_context) and pull.get("state") == "closed":
             kind = "merged" if pull.get("merged_at") is not None else "closed_unmerged"
-        elif section_is_merged:
-            kind = "merged"
         elif (
-            section_is_open
-            or OPEN_PR_MARKER.search(line)
-            or PR_OPEN_STATEMENT.search(local_context)
+            OPEN_PR_MARKER.search(line) or PR_OPEN_STATEMENT.search(local_context)
         ):
             kind = "open"
         elif PR_MERGED_STATEMENT.search(local_context):
             kind = "merged"
+        elif section_is_merged:
+            kind = "merged"
+        elif section_is_open:
+            kind = "open"
         claims.append(
             {
                 "url": url,

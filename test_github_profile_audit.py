@@ -118,6 +118,173 @@ class AuditTests(unittest.TestCase):
         )
         self.assertTrue(claim["repo_breakdown_matches_total"])
 
+    def test_activity_snapshot_with_seconds_and_separate_repo_inventory(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 02:49:15 ICT / "
+            "2026-10-13 19:49:45 UTC):** 416 contributions in the exact preceding 365 days "
+            "(`2025-10-13T19:49:45Z`–`2026-10-13T19:49:45Z`), including 262 commits, "
+            "63 pull-request contributions, 27 reviews and 2 issues. "
+            "**Current public-repository inventory, separately rechecked 2026-10-14 04:14 ICT:** "
+            "34 repositories — 15 non-fork repositories including this profile, plus 19 forks."
+        )
+        readme = base64.b64encode(readme_markdown.encode("utf-8")).decode()
+
+        def opener(request, timeout=15):
+            self.assertEqual(request.full_url, "https://api.github.com/graphql")
+            query = json.loads(request.data)
+            self.assertEqual(
+                query["variables"],
+                {
+                    "login": "demo",
+                    "from": "2025-10-13T19:49:45Z",
+                    "to": "2026-10-13T19:49:45Z",
+                },
+            )
+            return Response(
+                {
+                    "data": {
+                        "user": {
+                            "contributionsCollection": {
+                                "startedAt": "2025-10-13T19:49:45Z",
+                                "endedAt": "2026-10-13T19:49:45Z",
+                                "totalCommitContributions": 262,
+                                "totalPullRequestContributions": 63,
+                                "totalPullRequestReviewContributions": 27,
+                                "totalIssueContributions": 2,
+                                "contributionCalendar": {"totalContributions": 416},
+                            }
+                        }
+                    }
+                }
+            )
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(
+                {"content": readme}, {"public_repos": 34}, "demo", opener
+            )
+
+        self.assertEqual(claim["verification"], "checked")
+        self.assertTrue(claim["matches"])
+        self.assertEqual(claim["period_start"], "2025-10-13T19:49:45Z")
+        self.assertEqual(claim["period_end"], "2026-10-13T19:49:45Z")
+        self.assertEqual(claim["reported_public_repos"], 34)
+        self.assertEqual(
+            claim["reported_repo_breakdown"],
+            {"non_fork_public_repos": 15, "forks": 19},
+        )
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
+    def test_activity_snapshot_with_repo_inventory_without_separately_marker(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 22:41 ICT / "
+            "2026-10-14 15:41:33 UTC):** 434 contributions in the exact preceding 365 days "
+            "(`2025-10-14T15:41:33Z`–`2026-10-14T15:41:33Z`), including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues. "
+            "**Current public-repository inventory, rechecked 2026-10-14 22:41 ICT:** "
+            "35 repositories — 15 non-fork repositories including this profile, plus 20 forks."
+        )
+        readme = base64.b64encode(readme_markdown.encode("utf-8")).decode()
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": ""}):
+            claim = contribution_snapshot_claim(
+                {"content": readme}, {"public_repos": 35}, "demo", fake_opener
+            )
+
+        self.assertEqual(claim["verification"], "not_checked_auth_required")
+        self.assertEqual(claim["reported_public_repos"], 35)
+        self.assertEqual(
+            claim["reported_repo_breakdown"],
+            {"non_fork_public_repos": 15, "forks": 20},
+        )
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
+    def test_complete_utc_calendar_snapshot_uses_inclusive_calendar_window(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-15 19:41:06 ICT / "
+            "2026-10-15 12:41:06 UTC):** 434 contributions across the 365 complete UTC calendar dates "
+            "from `2025-10-15` through `2026-10-14`, including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues. "
+            "**Current public-repository inventory, rechecked 2026-10-15 19:41 ICT:** "
+            "35 repositories — 15 non-fork repositories including this profile, plus 20 forks."
+        )
+        readme = {"content": base64.b64encode(readme_markdown.encode("utf-8")).decode()}
+
+        def opener(request, timeout=15):
+            self.assertEqual(request.full_url, "https://api.github.com/graphql")
+            query = json.loads(request.data)
+            self.assertEqual(
+                query["variables"],
+                {
+                    "login": "demo",
+                    "from": "2025-10-15T00:00:00Z",
+                    "to": "2026-10-14T23:59:59Z",
+                },
+            )
+            return Response(
+                {
+                    "data": {
+                        "user": {
+                            "contributionsCollection": {
+                                "startedAt": "2025-10-15T00:00:00Z",
+                                "endedAt": "2026-10-14T23:59:59Z",
+                                "totalCommitContributions": 264,
+                                "totalPullRequestContributions": 72,
+                                "totalPullRequestReviewContributions": 31,
+                                "totalIssueContributions": 2,
+                                "contributionCalendar": {"totalContributions": 434},
+                            }
+                        }
+                    }
+                }
+            )
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(readme, {"public_repos": 35}, "demo", opener)
+
+        self.assertEqual(claim["verification"], "checked")
+        self.assertTrue(claim["matches"])
+        self.assertEqual(claim["window_type"], "complete_utc_calendar_days")
+        self.assertEqual(claim["period_start"], "2025-10-15T00:00:00Z")
+        self.assertEqual(claim["period_end"], "2026-10-14T23:59:59Z")
+        self.assertEqual(claim["reported_public_repos"], 35)
+        self.assertTrue(claim["repo_breakdown_matches_total"])
+
+    def test_calendar_snapshot_rejects_a_range_that_is_not_365_complete_days(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-15 19:41:06 ICT / "
+            "2026-10-15 12:41:06 UTC):** 434 contributions across the 365 complete UTC calendar dates "
+            "from `2025-10-16` through `2026-10-14`, including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues."
+        )
+        readme = {"content": base64.b64encode(readme_markdown.encode("utf-8")).decode()}
+
+        def opener(request, timeout=15):
+            raise AssertionError("invalid calendar range must not query GitHub")
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(readme, {"public_repos": 35}, "demo", opener)
+
+        self.assertEqual(claim["verification"], "invalid_snapshot_window")
+        self.assertFalse(claim["matches"])
+
+    def test_calendar_snapshot_rejects_snapshot_before_window_end(self):
+        readme_markdown = (
+            "**GitHub activity snapshot (GraphQL, rechecked 2026-10-14 12:41:06 ICT / "
+            "2026-10-14 05:41:06 UTC):** 434 contributions across the 365 complete UTC calendar dates "
+            "from `2025-10-15` through `2026-10-14`, including 264 commits, "
+            "72 pull-request contributions, 31 reviews and 2 issues."
+        )
+        readme = {"content": base64.b64encode(readme_markdown.encode("utf-8")).decode()}
+
+        def opener(request, timeout=15):
+            raise AssertionError("incomplete calendar window must not query GitHub")
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"}):
+            claim = contribution_snapshot_claim(readme, {"public_repos": 35}, "demo", opener)
+
+        self.assertEqual(claim["verification"], "invalid_snapshot_window")
+        self.assertFalse(claim["matches"])
+
     def test_current_snapshot_flags_an_arithmetically_inconsistent_repo_breakdown(self):
         readme = base64.b64encode(
             b"**GitHub contribution snapshot (GraphQL, rechecked 2026-10-07 07:33 ICT / "
@@ -352,6 +519,37 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(report["checks"]["profile_merged_pr_claims_are_merged"])
         self.assertEqual([claim["kind"] for claim in report["pull_request_claims"]], ["open", "merged"])
 
+    def test_explicit_pr_status_overrides_generic_section_heading(self):
+        readme = base64.b64encode(
+            b"**Open-source work in review:**\n"
+            b"| https://github.com/example/project/pull/7 | Open-source docs; maintainer merged it at `abc123` |\n"
+            b"| https://github.com/example/project/pull/8 | - open at `def456`; review required |\n"
+            b"**Merged upstream:**\n"
+            b"| https://github.com/example/project/pull/9 | Open at `ghi789`; review required |"
+        ).decode()
+
+        def opener(request, timeout=15):
+            path = request.full_url.removeprefix("https://api.github.com")
+            if path == "/users/demo":
+                return Response({"type": "User", "name": "Demo", "public_repos": 0})
+            if path == "/users/demo/repos?per_page=100&type=owner&sort=updated":
+                return Response([])
+            if path == "/repos/demo/demo/readme":
+                return Response({"path": "README.md", "content": readme})
+            if path == "/repos/example/project/pulls/7":
+                return Response({"state": "closed", "merged_at": "2026-10-20T00:00:00Z", "draft": False})
+            if path == "/repos/example/project/pulls/8":
+                return Response({"state": "open", "merged_at": None, "draft": False})
+            if path == "/repos/example/project/pulls/9":
+                return Response({"state": "open", "merged_at": None, "draft": False})
+            raise AssertionError(path)
+
+        report = audit("demo", opener)
+        claims = report["pull_request_claims"]
+        self.assertEqual([claim["kind"] for claim in claims], ["merged", "open", "open"])
+        self.assertTrue(report["checks"]["profile_merged_pr_claims_are_merged"])
+        self.assertTrue(report["checks"]["profile_pr_claims_are_open"])
+
     def test_pr_lifecycle_claims_are_local_and_unlabeled_links_are_unasserted(self):
         urls = {
             number: f"https://github.com/example/project/pull/{number}"
@@ -404,6 +602,30 @@ class AuditTests(unittest.TestCase):
                 "unasserted",
             ],
         )
+
+    def test_pr_lifecycle_detects_inline_and_grouped_merged_claims(self):
+        urls = {
+            number: f"https://github.com/example/project/pull/{number}"
+            for number in range(15, 20)
+        }
+        markdown = (
+            f"- **[Example #{15}]({urls[15]}) — merged.** Added a focused regression.\n\n"
+            f"Four maintainer-merged PRs in Example: [#{16}]({urls[16]}), "
+            f"[#{17}]({urls[17]}), [#{18}]({urls[18]}) and [#{19}]({urls[19]})."
+        )
+        readme = {"content": base64.b64encode(markdown.encode()).decode()}
+
+        def opener(request, timeout=15):
+            return Response(
+                {
+                    "state": "closed",
+                    "merged_at": "2026-10-14T00:00:00Z",
+                    "draft": False,
+                }
+            )
+
+        claims = readme_pr_claims(readme, opener)
+        self.assertEqual([claim["kind"] for claim in claims], ["merged"] * 5)
 
     def test_profile_repository_claims_are_checked_against_live_state(self):
         readme = base64.b64encode(
